@@ -37,7 +37,7 @@
             btnPrint = new Button();
             statusStrip1 = new StatusStrip();
             statusLabel = new ToolStripStatusLabel();
-            printPreviewControl1 = new PrintPreviewControl();
+            printPreviewControl1 = new SafePrintPreviewControl();
             printDocument1 = new System.Drawing.Printing.PrintDocument();
             openFileDialog1 = new OpenFileDialog();
             pageSetupDialog1 = new PageSetupDialog();
@@ -182,7 +182,7 @@
         private Button btnPrint;
         private StatusStrip statusStrip1;
         private ToolStripStatusLabel statusLabel;
-        private PrintPreviewControl printPreviewControl1;
+        private SafePrintPreviewControl printPreviewControl1;
         private System.Drawing.Printing.PrintDocument printDocument1;
         private OpenFileDialog openFileDialog1;
         private PageSetupDialog pageSetupDialog1;
