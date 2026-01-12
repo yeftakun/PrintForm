@@ -5,6 +5,7 @@ using System.Drawing.Printing;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -408,6 +409,13 @@ namespace PrintForm
                 var json = JsonSerializer.Serialize(payload);
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
                 using var response = await Http.PostAsync($"{ServerBaseUrl}/api/clients/heartbeat", content);
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _clientId = null;
+                    await RegisterClientAsync();
+                    return;
+                }
+
                 if (!response.IsSuccessStatusCode)
                 {
                     statusLabel.Text = "Koneksi server terputus.";
@@ -430,6 +438,20 @@ namespace PrintForm
             try
             {
                 using var response = await Http.GetAsync($"{ServerBaseUrl}/api/clients/{_clientId}/ping");
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _clientId = null;
+                    await RegisterClientAsync();
+                    return;
+                }
+
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    _clientId = null;
+                    await RegisterClientAsync();
+                    return;
+                }
+
                 if (!response.IsSuccessStatusCode)
                 {
                     return;
