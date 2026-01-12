@@ -271,7 +271,8 @@ namespace PrintForm
 
         private void printDocument1_EndPrint(object sender, PrintEventArgs e)
         {
-            if (!string.IsNullOrWhiteSpace(_activeJobId))
+            var isAutoJob = !string.IsNullOrWhiteSpace(_activeJobId);
+            if (isAutoJob)
             {
                 var jobId = _activeJobId;
                 _activeJobId = null;
@@ -284,13 +285,13 @@ namespace PrintForm
                 _ = UpdateJobStatusAsync(jobId, e.PrintAction == PrintAction.PrintToPrinter ? "done" : "failed");
             }
 
-            if (e.PrintAction == PrintAction.PrintToPrinter)
+            if (!isAutoJob && e.PrintAction == PrintAction.PrintToPrinter)
             {
                 MessageBox.Show("Dokumen berhasil dikirim ke printer.",
                                 "Informasi", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 statusLabel.Text = "Selesai mengirim ke printer.";
             }
-            else
+            else if (!isAutoJob)
             {
                 statusLabel.Text = "Print dibatalkan atau tidak dikirim ke printer.";
             }

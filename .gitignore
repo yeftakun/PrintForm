@@ -5,6 +5,7 @@
 
 
 server/*
+server
 
 # User-specific files
 *.rsuser
