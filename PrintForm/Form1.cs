@@ -3,6 +3,10 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Printing;
 using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace PrintForm
@@ -11,16 +15,35 @@ namespace PrintForm
     {
         // Menyimpan gambar yang akan di-preview / di-print via PrintDocument
         private Image? _imageToPrint;
+        private static readonly HttpClient Http = CreateHttpClient();
+        private const string ServerBaseUrl = "http://127.0.0.1:3000";
+        private string? _clientId;
+        private System.Windows.Forms.Timer? _heartbeatTimer;
+        private System.Windows.Forms.Timer? _pingTimer;
+        private bool _registerInProgress;
 
         public Form1()
         {
             InitializeComponent();
+            FormClosing += Form1_FormClosing;
+        }
+
+        private static HttpClient CreateHttpClient()
+        {
+            var handler = new HttpClientHandler
+            {
+                UseProxy = false
+            };
+            return new HttpClient(handler)
+            {
+                Timeout = TimeSpan.FromSeconds(5)
+            };
         }
 
         // =========================
         // EVENT FORM LOAD
         // =========================
-        private void Form1_Load(object sender, EventArgs e)
+        private async void Form1_Load(object sender, EventArgs e)
         {
             // Isi comboPrinters dengan printer yang terpasang di Windows
             comboPrinters.Items.Clear();
@@ -38,9 +61,12 @@ namespace PrintForm
 
             // Hubungkan PrintDocument dengan PrintPreviewControl
             printPreviewControl1.Document = printDocument1;
-            printPreviewControl1.AutoZoom = true;
 
             statusLabel.Text = "Siap. Pilih printer dan dokumen.";
+
+            await EnsureRegisteredAsync();
+            StartHeartbeat();
+            StartPingPolling();
         }
 
         // =========================
@@ -71,6 +97,7 @@ namespace PrintForm
                     _imageToPrint = Image.FromFile(path);
                 }
 
+                ApplyPreviewZoom();
                 // Paksa refresh preview (akan panggil PrintPage)
                 printPreviewControl1.InvalidatePreview();
             }
@@ -264,6 +291,200 @@ namespace PrintForm
         private void txtFilePath_TextChanged(object sender, EventArgs e)
         {
             // Dibiarkan kosong; hanya agar designer tidak error
+        }
+
+        private async System.Threading.Tasks.Task RegisterClientAsync()
+        {
+            if (_registerInProgress)
+            {
+                return;
+            }
+
+            _registerInProgress = true;
+            try
+            {
+                statusLabel.Text = "Mencoba terhubung ke server...";
+                var printers = PrinterSettings.InstalledPrinters.Cast<string>().ToArray();
+                var payload = new
+                {
+                    clientId = _clientId,
+                    name = Environment.MachineName,
+                    printers
+                };
+                var json = JsonSerializer.Serialize(payload);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var response = await Http.PostAsync($"{ServerBaseUrl}/api/clients/register", content);
+                var responseBody = await response.Content.ReadAsStringAsync();
+                if (!response.IsSuccessStatusCode)
+                {
+                    statusLabel.Text = $"Gagal terhubung ke server ({(int)response.StatusCode}).";
+                    return;
+                }
+
+                using var doc = JsonDocument.Parse(responseBody);
+                if (doc.RootElement.TryGetProperty("id", out var id))
+                {
+                    _clientId = id.GetString();
+                }
+
+                statusLabel.Text = "Terhubung ke server.";
+            }
+            catch
+            {
+                statusLabel.Text = "Tidak bisa terhubung ke server.";
+            }
+            finally
+            {
+                _registerInProgress = false;
+            }
+        }
+
+        private void StartHeartbeat()
+        {
+            _heartbeatTimer = new System.Windows.Forms.Timer
+            {
+                Interval = 30000
+            };
+            _heartbeatTimer.Tick += async (_, _) => await SendHeartbeatAsync();
+            _heartbeatTimer.Start();
+        }
+
+        private void StartPingPolling()
+        {
+            _pingTimer = new System.Windows.Forms.Timer
+            {
+                Interval = 5000
+            };
+            _pingTimer.Tick += async (_, _) => await PollPingAsync();
+            _pingTimer.Start();
+        }
+
+        private async System.Threading.Tasks.Task SendHeartbeatAsync()
+        {
+            await EnsureRegisteredAsync();
+            if (string.IsNullOrWhiteSpace(_clientId))
+            {
+                return;
+            }
+
+            try
+            {
+                var payload = new { clientId = _clientId };
+                var json = JsonSerializer.Serialize(payload);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var response = await Http.PostAsync($"{ServerBaseUrl}/api/clients/heartbeat", content);
+                if (!response.IsSuccessStatusCode)
+                {
+                    statusLabel.Text = "Koneksi server terputus.";
+                }
+            }
+            catch
+            {
+                statusLabel.Text = "Koneksi server terputus.";
+            }
+        }
+
+        private async System.Threading.Tasks.Task PollPingAsync()
+        {
+            await EnsureRegisteredAsync();
+            if (string.IsNullOrWhiteSpace(_clientId))
+            {
+                return;
+            }
+
+            try
+            {
+                using var response = await Http.GetAsync($"{ServerBaseUrl}/api/clients/{_clientId}/ping");
+                if (!response.IsSuccessStatusCode)
+                {
+                    return;
+                }
+
+                var body = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(body);
+                if (!doc.RootElement.TryGetProperty("items", out var items))
+                {
+                    return;
+                }
+
+                if (items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
+                {
+                    return;
+                }
+
+                var count = items.GetArrayLength();
+                statusLabel.Text = "Ping diterima dari server.";
+                MessageBox.Show($"Ping diterima dari server ({count}).",
+                                "Ping", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch
+            {
+                // Abaikan jika server tidak bisa dihubungi
+            }
+        }
+
+        private async System.Threading.Tasks.Task EnsureRegisteredAsync()
+        {
+            if (!string.IsNullOrWhiteSpace(_clientId))
+            {
+                return;
+            }
+
+            await RegisterClientAsync();
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            ApplyPreviewZoom();
+        }
+
+        private void ApplyPreviewZoom()
+        {
+            if (printPreviewControl1.ClientSize.Width <= 0 || printPreviewControl1.ClientSize.Height <= 0)
+            {
+                return;
+            }
+
+            printPreviewControl1.AutoZoom = true;
+        }
+
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            StopTimers();
+            if (string.IsNullOrWhiteSpace(_clientId))
+            {
+                return;
+            }
+
+            try
+            {
+                var payload = new { clientId = _clientId };
+                var json = JsonSerializer.Serialize(payload);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                Http.PostAsync($"{ServerBaseUrl}/api/clients/unregister", content)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch
+            {
+                // Abaikan kegagalan saat shutdown
+            }
+        }
+
+        private void StopTimers()
+        {
+            if (_heartbeatTimer != null)
+            {
+                _heartbeatTimer.Stop();
+                _heartbeatTimer.Dispose();
+            }
+
+            if (_pingTimer != null)
+            {
+                _pingTimer.Stop();
+                _pingTimer.Dispose();
+            }
         }
     }
 }
