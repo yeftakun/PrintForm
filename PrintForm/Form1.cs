@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Printing;
 using System.IO;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -21,6 +22,15 @@ namespace PrintForm
         private System.Windows.Forms.Timer? _heartbeatTimer;
         private System.Windows.Forms.Timer? _pingTimer;
         private bool _registerInProgress;
+        private System.Windows.Forms.Timer? _jobPollTimer;
+        private bool _jobProcessing;
+        private string? _activeJobId;
+        private string? _activeJobTempPath;
+        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
+        private const int JobPollIntervalMs = 5000;
 
         public Form1()
         {
@@ -67,6 +77,7 @@ namespace PrintForm
             await EnsureRegisteredAsync();
             StartHeartbeat();
             StartPingPolling();
+            StartJobPolling();
         }
 
         // =========================
@@ -94,7 +105,8 @@ namespace PrintForm
                 string ext = Path.GetExtension(path).ToLowerInvariant();
                 if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp")
                 {
-                    _imageToPrint = Image.FromFile(path);
+                    using var img = Image.FromFile(path);
+                    _imageToPrint = new Bitmap(img);
                 }
 
                 ApplyPreviewZoom();
@@ -258,6 +270,19 @@ namespace PrintForm
 
         private void printDocument1_EndPrint(object sender, PrintEventArgs e)
         {
+            if (!string.IsNullOrWhiteSpace(_activeJobId))
+            {
+                var jobId = _activeJobId;
+                _activeJobId = null;
+                _jobProcessing = false;
+                if (!string.IsNullOrWhiteSpace(_activeJobTempPath))
+                {
+                    TryDeleteTempFile(_activeJobTempPath);
+                    _activeJobTempPath = null;
+                }
+                _ = UpdateJobStatusAsync(jobId, e.PrintAction == PrintAction.PrintToPrinter ? "done" : "failed");
+            }
+
             if (e.PrintAction == PrintAction.PrintToPrinter)
             {
                 MessageBox.Show("Dokumen berhasil dikirim ke printer.",
@@ -359,6 +384,16 @@ namespace PrintForm
             _pingTimer.Start();
         }
 
+        private void StartJobPolling()
+        {
+            _jobPollTimer = new System.Windows.Forms.Timer
+            {
+                Interval = JobPollIntervalMs
+            };
+            _jobPollTimer.Tick += async (_, _) => await PollJobsAsync();
+            _jobPollTimer.Start();
+        }
+
         private async System.Threading.Tasks.Task SendHeartbeatAsync()
         {
             await EnsureRegisteredAsync();
@@ -423,6 +458,228 @@ namespace PrintForm
             }
         }
 
+        private async System.Threading.Tasks.Task PollJobsAsync()
+        {
+            await EnsureRegisteredAsync();
+            if (string.IsNullOrWhiteSpace(_clientId) || _jobProcessing)
+            {
+                return;
+            }
+
+            try
+            {
+                using var response = await Http.GetAsync($"{ServerBaseUrl}/api/jobs?clientId={Uri.EscapeDataString(_clientId)}&status=ready");
+                if (!response.IsSuccessStatusCode)
+                {
+                    return;
+                }
+
+                var body = await response.Content.ReadAsStringAsync();
+                var jobs = JsonSerializer.Deserialize<List<PrintJob>>(body, JsonOptions);
+                if (jobs == null || jobs.Count == 0)
+                {
+                    return;
+                }
+
+                await ProcessJobAsync(jobs[0]);
+            }
+            catch
+            {
+                // Abaikan jika server tidak bisa dihubungi
+            }
+        }
+
+        private async System.Threading.Tasks.Task ProcessJobAsync(PrintJob job)
+        {
+            if (_jobProcessing)
+            {
+                return;
+            }
+
+            _jobProcessing = true;
+            _activeJobId = job.Id;
+            statusLabel.Text = $"Memproses job {job.Id}...";
+            var waitForEndPrint = false;
+
+            try
+            {
+                await UpdateJobStatusAsync(job.Id, "printing");
+
+                var downloadPath = await DownloadJobFileAsync(job.Id, job.OriginalName);
+                if (string.IsNullOrWhiteSpace(downloadPath))
+                {
+                    await UpdateJobStatusAsync(job.Id, "failed");
+                    _jobProcessing = false;
+                    _activeJobId = null;
+                    return;
+                }
+
+                _activeJobTempPath = downloadPath;
+
+                // Reset preview
+                _imageToPrint?.Dispose();
+                _imageToPrint = null;
+
+                string ext = Path.GetExtension(downloadPath).ToLowerInvariant();
+                if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp")
+                {
+                    using var img = Image.FromFile(downloadPath);
+                    _imageToPrint = new Bitmap(img);
+                }
+
+                txtFilePath.Text = downloadPath;
+                ApplyPreviewZoom();
+                printPreviewControl1.InvalidatePreview();
+
+                ApplyPrintConfig(job);
+
+                if (_imageToPrint != null)
+                {
+                    waitForEndPrint = true;
+                    printDocument1.Print();
+                    return;
+                }
+
+                await PrintNonImageAsync(downloadPath);
+                TryDeleteTempFile(downloadPath);
+                _activeJobTempPath = null;
+                await UpdateJobStatusAsync(job.Id, "done");
+            }
+            catch
+            {
+                if (!string.IsNullOrWhiteSpace(job.Id))
+                {
+                    await UpdateJobStatusAsync(job.Id, "failed");
+                }
+            }
+            finally
+            {
+                if (!waitForEndPrint)
+                {
+                    _jobProcessing = false;
+                    _activeJobId = null;
+                    if (!string.IsNullOrWhiteSpace(_activeJobTempPath))
+                    {
+                        TryDeleteTempFile(_activeJobTempPath);
+                        _activeJobTempPath = null;
+                    }
+                }
+            }
+        }
+
+        private void ApplyPrintConfig(PrintJob job)
+        {
+            var printerName = comboPrinters.SelectedItem?.ToString();
+            if (string.IsNullOrWhiteSpace(printerName))
+            {
+                var defaultSettings = new PrinterSettings();
+                printerName = defaultSettings.PrinterName;
+            }
+
+            printDocument1.PrinterSettings.PrinterName = printerName ?? string.Empty;
+            if (!printDocument1.PrinterSettings.IsValid)
+            {
+                statusLabel.Text = "Printer tidak valid.";
+                return;
+            }
+
+            if (job.PrintConfig != null)
+            {
+                if (job.PrintConfig.Copies >= 1 && job.PrintConfig.Copies <= 999)
+                {
+                    printDocument1.PrinterSettings.Copies = (short)job.PrintConfig.Copies;
+                }
+
+                if (!string.IsNullOrWhiteSpace(job.PrintConfig.PaperSize))
+                {
+                    foreach (PaperSize size in printDocument1.PrinterSettings.PaperSizes)
+                    {
+                        if (string.Equals(size.PaperName, job.PrintConfig.PaperSize, StringComparison.OrdinalIgnoreCase))
+                        {
+                            printDocument1.DefaultPageSettings.PaperSize = size;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        private async System.Threading.Tasks.Task<string?> DownloadJobFileAsync(string jobId, string originalName)
+        {
+            using var response = await Http.GetAsync($"{ServerBaseUrl}/api/jobs/{Uri.EscapeDataString(jobId)}/download");
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var safeName = Path.GetFileName(originalName);
+            if (string.IsNullOrWhiteSpace(safeName))
+            {
+                safeName = jobId;
+            }
+
+            var filePath = Path.Combine(Path.GetTempPath(), $"{jobId}_{safeName}");
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            await using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await stream.CopyToAsync(fileStream);
+            return filePath;
+        }
+
+        private async System.Threading.Tasks.Task PrintNonImageAsync(string filePath)
+        {
+            var printerName = comboPrinters.SelectedItem?.ToString();
+            if (string.IsNullOrWhiteSpace(printerName))
+            {
+                var defaultSettings = new PrinterSettings();
+                printerName = defaultSettings.PrinterName;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = filePath,
+                Verb = "printto",
+                Arguments = $"\"{printerName}\"",
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                UseShellExecute = true
+            };
+
+            var p = Process.Start(psi);
+            if (p != null)
+            {
+                p.WaitForExit(10000);
+            }
+
+            await System.Threading.Tasks.Task.CompletedTask;
+        }
+
+        private void TryDeleteTempFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+                // Abaikan jika file tidak bisa dihapus
+            }
+        }
+
+        private async System.Threading.Tasks.Task UpdateJobStatusAsync(string jobId, string status)
+        {
+            var payload = new { status };
+            var json = JsonSerializer.Serialize(payload);
+            using var content = new StringContent(json, Encoding.UTF8, "application/json");
+            using var request = new HttpRequestMessage(HttpMethod.Patch, $"{ServerBaseUrl}/api/jobs/{Uri.EscapeDataString(jobId)}")
+            {
+                Content = content
+            };
+            using var response = await Http.SendAsync(request);
+        }
+
         private async System.Threading.Tasks.Task EnsureRegisteredAsync()
         {
             if (!string.IsNullOrWhiteSpace(_clientId))
@@ -485,6 +742,25 @@ namespace PrintForm
                 _pingTimer.Stop();
                 _pingTimer.Dispose();
             }
+
+            if (_jobPollTimer != null)
+            {
+                _jobPollTimer.Stop();
+                _jobPollTimer.Dispose();
+            }
+        }
+
+        private sealed class PrintJob
+        {
+            public string Id { get; set; } = string.Empty;
+            public string OriginalName { get; set; } = string.Empty;
+            public PrintConfig? PrintConfig { get; set; }
+        }
+
+        private sealed class PrintConfig
+        {
+            public string? PaperSize { get; set; }
+            public int Copies { get; set; }
         }
     }
 }
