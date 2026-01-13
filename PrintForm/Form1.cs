@@ -64,6 +64,8 @@ namespace PrintForm
                 comboPrinters.SelectedItem = defaultSettings.PrinterName;
             }
 
+            comboPrinters.SelectedIndexChanged += comboPrinters_SelectedIndexChanged;
+
             statusLabel.Text = "Siap. Pilih printer lalu buka Print Job.";
 
             await EnsureRegisteredAsync();
@@ -105,6 +107,11 @@ namespace PrintForm
 
             _jobListForm.Show();
             _jobListForm.BringToFront();
+        }
+
+        private void comboPrinters_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            _ = SendHeartbeatAsync();
         }
 
         // =========================
@@ -214,7 +221,8 @@ namespace PrintForm
                 {
                     clientId = _clientId,
                     name = Environment.MachineName,
-                    printers
+                    printers,
+                    selectedPrinter = GetSelectedPrinterName()
                 };
                 var json = JsonSerializer.Serialize(payload);
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -274,7 +282,11 @@ namespace PrintForm
 
             try
             {
-                var payload = new { clientId = _clientId };
+                var payload = new
+                {
+                    clientId = _clientId,
+                    selectedPrinter = GetSelectedPrinterName()
+                };
                 var json = JsonSerializer.Serialize(payload);
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
                 using var response = await Http.PostAsync($"{ServerBaseUrl}/api/clients/heartbeat", content);
@@ -548,6 +560,25 @@ namespace PrintForm
             }
 
             await RegisterClientAsync();
+        }
+
+        private string? GetSelectedPrinterName()
+        {
+            var selected = comboPrinters.SelectedItem?.ToString();
+            if (!string.IsNullOrWhiteSpace(selected))
+            {
+                return selected;
+            }
+
+            try
+            {
+                var defaultSettings = new PrinterSettings();
+                return defaultSettings.PrinterName;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
