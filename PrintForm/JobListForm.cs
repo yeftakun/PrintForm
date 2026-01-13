@@ -136,7 +136,8 @@ namespace PrintForm
                 return;
             }
 
-            if (!string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(job.Status, "pending", StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
@@ -204,14 +205,18 @@ namespace PrintForm
                 row.Tag = job;
 
                 var buttonCell = (DataGridViewButtonCell)row.Cells["colPrint"];
-                if (!string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase))
                 {
-                    buttonCell.Value = "-";
-                    row.Cells["colPrint"].Style.ForeColor = Color.Gray;
+                    buttonCell.Value = "Print";
+                }
+                else if (string.Equals(job.Status, "pending", StringComparison.OrdinalIgnoreCase))
+                {
+                    buttonCell.Value = "Retry";
                 }
                 else
                 {
-                    buttonCell.Value = "Print";
+                    buttonCell.Value = "-";
+                    row.Cells["colPrint"].Style.ForeColor = Color.Gray;
                 }
             }
         }

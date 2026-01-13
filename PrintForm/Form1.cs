@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Printing;
 using System.IO;
 using System.Linq;
+using System.Management;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -378,6 +379,16 @@ namespace PrintForm
 
             try
             {
+                var printerName = GetSelectedPrinterName();
+                if (IsPrinterOffline(printerName, out var offlineReason))
+                {
+                    statusLabel.Text = offlineReason ?? "Printer sedang offline. Job ditunda.";
+                    await UpdateJobStatusAsync(job.Id, "pending");
+                    _jobProcessing = false;
+                    _activeJobId = null;
+                    return;
+                }
+
                 await UpdateJobStatusAsync(job.Id, "printing");
 
                 var downloadPath = await DownloadJobFileAsync(job.Id, job.OriginalName);
@@ -614,6 +625,56 @@ namespace PrintForm
 
                 await System.Threading.Tasks.Task.CompletedTask;
                 TryDeleteTempDirectory(userDataDir);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool IsPrinterOffline(string? printerName, out string? reason)
+        {
+            reason = null;
+            if (string.IsNullOrWhiteSpace(printerName))
+            {
+                reason = "Printer tidak ditemukan. Job ditunda.";
+                return true;
+            }
+
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Name, WorkOffline, PrinterStatus FROM Win32_Printer");
+                using var results = searcher.Get();
+                foreach (ManagementObject printer in results)
+                {
+                    var name = printer["Name"]?.ToString();
+                    if (!string.Equals(name, printerName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var workOffline = printer["WorkOffline"];
+                    if (workOffline is bool isOffline && isOffline)
+                    {
+                        reason = "Printer sedang offline. Job ditunda.";
+                        return true;
+                    }
+
+                    var statusObj = printer["PrinterStatus"];
+                    if (statusObj != null && int.TryParse(statusObj.ToString(), out var statusCode))
+                    {
+                        if (statusCode == 7)
+                        {
+                            reason = "Printer sedang offline. Job ditunda.";
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
+                reason = "Printer tidak ditemukan. Job ditunda.";
                 return true;
             }
             catch
