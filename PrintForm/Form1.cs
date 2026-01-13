@@ -298,7 +298,6 @@ namespace PrintForm
                 using var response = await Http.PostAsync($"{ServerBaseUrl}/api/clients/heartbeat", content);
                 if (response.StatusCode == HttpStatusCode.NotFound)
                 {
-                    _clientId = null;
                     await RegisterClientAsync();
                     return;
                 }
@@ -327,7 +326,6 @@ namespace PrintForm
                 using var response = await Http.GetAsync($"{ServerBaseUrl}/api/clients/{_clientId}/ping");
                 if (response.StatusCode == HttpStatusCode.NotFound)
                 {
-                    _clientId = null;
                     await RegisterClientAsync();
                     return;
                 }
@@ -420,10 +418,10 @@ namespace PrintForm
                     return;
                 }
 
-                await PrintNonImageAsync(downloadPath);
+                var printed = await PrintNonImageAsync(downloadPath);
                 TryDeleteTempFile(downloadPath);
                 _activeJobTempPath = null;
-                await UpdateJobStatusAsync(job.Id, "done");
+                await UpdateJobStatusAsync(job.Id, printed ? "done" : "failed");
             }
             catch
             {
@@ -506,8 +504,30 @@ namespace PrintForm
             return filePath;
         }
 
-        private async System.Threading.Tasks.Task PrintNonImageAsync(string filePath)
+        private async System.Threading.Tasks.Task<bool> PrintNonImageAsync(string filePath)
         {
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            if (ext == ".pdf")
+            {
+                if (await TryPrintPdfWithSumatraAsync(filePath))
+                {
+                    return true;
+                }
+
+                if (await TryPrintPdfWithEdgeAsync(filePath, headless: true))
+                {
+                    return true;
+                }
+
+                if (await TryPrintPdfWithEdgeAsync(filePath, headless: false))
+                {
+                    return true;
+                }
+
+                statusLabel.Text = "Gagal mencetak PDF. Install SumatraPDF.";
+                return false;
+            }
+
             var printerName = comboPrinters.SelectedItem?.ToString();
             if (string.IsNullOrWhiteSpace(printerName))
             {
@@ -532,6 +552,167 @@ namespace PrintForm
             }
 
             await System.Threading.Tasks.Task.CompletedTask;
+            return true;
+        }
+
+        private async System.Threading.Tasks.Task<bool> TryPrintPdfWithEdgeAsync(string filePath)
+        {
+            return await TryPrintPdfWithEdgeAsync(filePath, headless: true);
+        }
+
+        private async System.Threading.Tasks.Task<bool> TryPrintPdfWithEdgeAsync(string filePath, bool headless)
+        {
+            var printerName = GetSelectedPrinterName();
+            if (string.IsNullOrWhiteSpace(printerName))
+            {
+                return false;
+            }
+
+            var edgePath = ResolveEdgePath();
+            if (string.IsNullOrWhiteSpace(edgePath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var userDataDir = Path.Combine(Path.GetTempPath(), $"printform-edge-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(userDataDir);
+                var safePrinter = printerName.Replace("\"", "\\\"");
+                var fileUrl = new Uri(filePath).AbsoluteUri;
+
+                var headlessFlag = headless ? "--headless=new" : "";
+                var appFlag = headless ? "" : $"--app=\"{fileUrl}\"";
+                var target = headless ? $"\"{fileUrl}\"" : "";
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = edgePath,
+                    Arguments = $"{headlessFlag} --disable-gpu --no-first-run --disable-extensions --disable-print-preview --kiosk-printing --user-data-dir=\"{userDataDir}\" --print-to-printer=\"{safePrinter}\" {appFlag} {target}",
+                    CreateNoWindow = headless,
+                    WindowStyle = headless ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Minimized,
+                    UseShellExecute = false
+                };
+
+                var p = Process.Start(psi);
+                if (p == null)
+                {
+                    return false;
+                }
+
+                var timeoutMs = headless ? 20000 : 8000;
+                var exited = p.WaitForExit(timeoutMs);
+                if (!exited)
+                {
+                    try
+                    {
+                        p.Kill(true);
+                    }
+                    catch
+                    {
+                        // Abaikan kegagalan kill
+                    }
+                    return false;
+                }
+
+                if (p.ExitCode != 0 && headless)
+                {
+                    return false;
+                }
+
+                await System.Threading.Tasks.Task.CompletedTask;
+                TryDeleteTempDirectory(userDataDir);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async System.Threading.Tasks.Task<bool> TryPrintPdfWithSumatraAsync(string filePath)
+        {
+            var printerName = GetSelectedPrinterName();
+            if (string.IsNullOrWhiteSpace(printerName))
+            {
+                return false;
+            }
+
+            var sumatraPath = ResolveSumatraPath();
+            if (string.IsNullOrWhiteSpace(sumatraPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = sumatraPath,
+                    Arguments = $"-print-to \"{printerName}\" -silent -exit-on-print \"{filePath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                };
+
+                var p = Process.Start(psi);
+                if (p != null)
+                {
+                    p.WaitForExit(15000);
+                }
+
+                await System.Threading.Tasks.Task.CompletedTask;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private string? ResolveEdgePath()
+        {
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+            var candidates = new[]
+            {
+                Path.Combine(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+                Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe")
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return "msedge.exe";
+        }
+
+        private string? ResolveSumatraPath()
+        {
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+            var candidates = new[]
+            {
+                Path.Combine(programFilesX86, "SumatraPDF", "SumatraPDF.exe"),
+                Path.Combine(programFiles, "SumatraPDF", "SumatraPDF.exe"),
+                Path.Combine(localAppData, "SumatraPDF", "SumatraPDF.exe")
+            };
+
+            foreach (var candidate in candidates)
+            {
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
         }
 
         private void TryDeleteTempFile(string path)
@@ -546,6 +727,21 @@ namespace PrintForm
             catch
             {
                 // Abaikan jika file tidak bisa dihapus
+            }
+        }
+
+        private void TryDeleteTempDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, true);
+                }
+            }
+            catch
+            {
+                // Abaikan jika folder tidak bisa dihapus
             }
         }
 
