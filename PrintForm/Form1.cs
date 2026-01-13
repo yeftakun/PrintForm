@@ -103,7 +103,7 @@ namespace PrintForm
         {
             if (_jobListForm == null || _jobListForm.IsDisposed)
             {
-                _jobListForm = new JobListForm(Http, ServerBaseUrl, () => _clientId, PrintJobFromListAsync);
+                _jobListForm = new JobListForm(Http, ServerBaseUrl, () => _clientId, PrintJobFromListAsync, RejectJobFromListAsync);
             }
 
             _jobListForm.Show();
@@ -362,6 +362,18 @@ namespace PrintForm
             }
 
             await ProcessJobAsync(job);
+        }
+
+        private async System.Threading.Tasks.Task RejectJobFromListAsync(PrintJob job)
+        {
+            if (_jobProcessing)
+            {
+                statusLabel.Text = "Masih memproses job lain.";
+                return;
+            }
+
+            await UpdateJobStatusAsync(job.Id, "rejected");
+            statusLabel.Text = $"Job {job.Id} ditolak.";
         }
 
         private async System.Threading.Tasks.Task ProcessJobAsync(PrintJob job)

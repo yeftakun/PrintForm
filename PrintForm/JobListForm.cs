@@ -14,6 +14,7 @@ namespace PrintForm
         private readonly string _serverBaseUrl;
         private readonly Func<string?> _getClientId;
         private readonly Func<PrintJob, Task> _printJobAsync;
+        private readonly Func<PrintJob, Task> _rejectJobAsync;
         private readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
@@ -27,12 +28,13 @@ namespace PrintForm
             Interval = 5000
         };
 
-        public JobListForm(HttpClient http, string serverBaseUrl, Func<string?> getClientId, Func<PrintJob, Task> printJobAsync)
+        public JobListForm(HttpClient http, string serverBaseUrl, Func<string?> getClientId, Func<PrintJob, Task> printJobAsync, Func<PrintJob, Task> rejectJobAsync)
         {
             _http = http;
             _serverBaseUrl = serverBaseUrl.TrimEnd('/');
             _getClientId = getClientId;
             _printJobAsync = printJobAsync;
+            _rejectJobAsync = rejectJobAsync;
 
             Text = "Job List";
             StartPosition = FormStartPosition.CenterParent;
@@ -70,13 +72,13 @@ namespace PrintForm
             {
                 Name = "colDoc",
                 HeaderText = "Dokumen",
-                FillWeight = 28
+                FillWeight = 25
             });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colAlias",
                 HeaderText = "Alias",
-                FillWeight = 15
+                FillWeight = 12
             });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
@@ -94,18 +96,25 @@ namespace PrintForm
             {
                 Name = "colStatus",
                 HeaderText = "Status",
-                FillWeight = 12
+                FillWeight = 10
             });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "colTime",
                 HeaderText = "Waktu",
-                FillWeight = 20
+                FillWeight = 18
             });
             _grid.Columns.Add(new DataGridViewButtonColumn
             {
                 Name = "colPrint",
                 HeaderText = "Aksi",
+                UseColumnTextForButtonValue = false,
+                FillWeight = 10
+            });
+            _grid.Columns.Add(new DataGridViewButtonColumn
+            {
+                Name = "colReject",
+                HeaderText = "Tolak",
                 UseColumnTextForButtonValue = false,
                 FillWeight = 10
             });
@@ -125,35 +134,98 @@ namespace PrintForm
                 return;
             }
 
-            if (_grid.Columns[e.ColumnIndex].Name != "colPrint")
-            {
-                return;
-            }
-
             var row = _grid.Rows[e.RowIndex];
             if (row.Tag is not PrintJob job)
             {
                 return;
             }
 
-            if (!string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(job.Status, "pending", StringComparison.OrdinalIgnoreCase))
+            var columnName = _grid.Columns[e.ColumnIndex].Name;
+            if (columnName == "colPrint")
             {
+                var latestJob = await FetchJobAsync(job.Id);
+                if (latestJob == null)
+                {
+                    _statusLabel.Text = "Job tidak ditemukan atau sudah dihapus.";
+                    await LoadJobsAsync();
+                    return;
+                }
+
+                job = latestJob;
+                if (!string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(job.Status, "pending", StringComparison.OrdinalIgnoreCase))
+                {
+                    _statusLabel.Text = $"Job sudah berubah status ({job.Status}).";
+                    await LoadJobsAsync();
+                    return;
+                }
+
+                _statusLabel.Text = $"Mencetak {job.OriginalName}...";
+                _refreshButton.Enabled = false;
+                try
+                {
+                    await _printJobAsync(job);
+                }
+                finally
+                {
+                    _refreshButton.Enabled = true;
+                }
+
+                await LoadJobsAsync();
                 return;
             }
 
-            _statusLabel.Text = $"Mencetak {job.OriginalName}...";
-            _refreshButton.Enabled = false;
+            if (columnName == "colReject")
+            {
+                var latestJob = await FetchJobAsync(job.Id);
+                if (latestJob == null)
+                {
+                    _statusLabel.Text = "Job tidak ditemukan atau sudah dihapus.";
+                    await LoadJobsAsync();
+                    return;
+                }
+
+                job = latestJob;
+                if (!string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase))
+                {
+                    _statusLabel.Text = $"Job sudah berubah status ({job.Status}).";
+                    await LoadJobsAsync();
+                    return;
+                }
+
+                _statusLabel.Text = $"Menolak {job.OriginalName}...";
+                _refreshButton.Enabled = false;
+                try
+                {
+                    await _rejectJobAsync(job);
+                }
+                finally
+                {
+                    _refreshButton.Enabled = true;
+                }
+
+                await LoadJobsAsync();
+            }
+        }
+
+        private async Task<PrintJob?> FetchJobAsync(string jobId)
+        {
             try
             {
-                await _printJobAsync(job);
-            }
-            finally
-            {
-                _refreshButton.Enabled = true;
-            }
+                using var response = await _http.GetAsync($"{_serverBaseUrl}/api/jobs/{Uri.EscapeDataString(jobId)}");
+                if (!response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
 
-            await LoadJobsAsync();
+                var body = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<PrintJob>(body, _jsonOptions);
+            }
+            catch
+            {
+                _statusLabel.Text = "Gagal memeriksa status job.";
+                return null;
+            }
         }
 
         private async Task LoadJobsAsync()
@@ -205,18 +277,25 @@ namespace PrintForm
                 row.Tag = job;
 
                 var buttonCell = (DataGridViewButtonCell)row.Cells["colPrint"];
+                var rejectCell = (DataGridViewButtonCell)row.Cells["colReject"];
                 if (string.Equals(job.Status, "ready", StringComparison.OrdinalIgnoreCase))
                 {
                     buttonCell.Value = "Print";
+                    rejectCell.Value = "Tolak";
+                    row.Cells["colReject"].Style.ForeColor = Color.Black;
                 }
                 else if (string.Equals(job.Status, "pending", StringComparison.OrdinalIgnoreCase))
                 {
                     buttonCell.Value = "Retry";
+                    rejectCell.Value = "-";
+                    row.Cells["colReject"].Style.ForeColor = Color.Gray;
                 }
                 else
                 {
                     buttonCell.Value = "-";
                     row.Cells["colPrint"].Style.ForeColor = Color.Gray;
+                    rejectCell.Value = "-";
+                    row.Cells["colReject"].Style.ForeColor = Color.Gray;
                 }
             }
         }
