@@ -272,7 +272,8 @@ namespace PrintForm
                 }
                 var alias = string.IsNullOrWhiteSpace(job.Alias) ? "-" : job.Alias;
 
-                var rowIndex = _grid.Rows.Add(job.OriginalName, alias, paper, copies, job.Status, timeText);
+                var displayStatus = GetStatusLabel(job.Status);
+                var rowIndex = _grid.Rows.Add(job.OriginalName, alias, paper, copies, displayStatus, timeText);
                 var row = _grid.Rows[rowIndex];
                 row.Tag = job;
 
@@ -305,6 +306,18 @@ namespace PrintForm
             _refreshTimer.Stop();
             _refreshTimer.Dispose();
             base.OnFormClosed(e);
+        }
+
+        private static string GetStatusLabel(string? status)
+        {
+            if (string.IsNullOrWhiteSpace(status))
+            {
+                return "-";
+            }
+
+            return string.Equals(status, "done", StringComparison.OrdinalIgnoreCase)
+                ? "Sent"
+                : status;
         }
     }
 }
