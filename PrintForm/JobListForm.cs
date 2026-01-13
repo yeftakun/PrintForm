@@ -70,7 +70,13 @@ namespace PrintForm
             {
                 Name = "colDoc",
                 HeaderText = "Dokumen",
-                FillWeight = 35
+                FillWeight = 28
+            });
+            _grid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "colAlias",
+                HeaderText = "Alias",
+                FillWeight = 15
             });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
@@ -94,7 +100,7 @@ namespace PrintForm
             {
                 Name = "colTime",
                 HeaderText = "Waktu",
-                FillWeight = 23
+                FillWeight = 20
             });
             _grid.Columns.Add(new DataGridViewButtonColumn
             {
@@ -191,8 +197,9 @@ namespace PrintForm
                 {
                     timeText = dt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
                 }
+                var alias = string.IsNullOrWhiteSpace(job.Alias) ? "-" : job.Alias;
 
-                var rowIndex = _grid.Rows.Add(job.OriginalName, paper, copies, job.Status, timeText);
+                var rowIndex = _grid.Rows.Add(job.OriginalName, alias, paper, copies, job.Status, timeText);
                 var row = _grid.Rows[rowIndex];
                 row.Tag = job;
 

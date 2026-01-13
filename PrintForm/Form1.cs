@@ -26,9 +26,6 @@ namespace PrintForm
         private string? _activeJobId;
         private string? _activeJobTempPath;
         private JobListForm? _jobListForm;
-        private System.Windows.Forms.Timer? _printerStatusTimer;
-        private DateTime _printerStatusHoldUntilUtc = DateTime.MinValue;
-        private const int PrinterStatusHoldSeconds = 5;
 
         public Form1()
         {
@@ -180,7 +177,6 @@ namespace PrintForm
                     TryDeleteTempFile(_activeJobTempPath);
                     _activeJobTempPath = null;
                 }
-                SchedulePrinterIdleStatus();
                 _ = UpdateJobStatusAsync(jobId, e.PrintAction == PrintAction.PrintToPrinter ? "done" : "failed");
             }
 
@@ -226,8 +222,7 @@ namespace PrintForm
                     clientId = _clientId,
                     name = Environment.MachineName,
                     printers,
-                    selectedPrinter = GetSelectedPrinterName(),
-                    printerStatus = GetPrinterStatus()
+                    selectedPrinter = GetSelectedPrinterName()
                 };
                 var json = JsonSerializer.Serialize(payload);
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -290,8 +285,7 @@ namespace PrintForm
                 var payload = new
                 {
                     clientId = _clientId,
-                    selectedPrinter = GetSelectedPrinterName(),
-                    printerStatus = GetPrinterStatus()
+                    selectedPrinter = GetSelectedPrinterName()
                 };
                 var json = JsonSerializer.Serialize(payload);
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -380,7 +374,6 @@ namespace PrintForm
             _activeJobId = job.Id;
             statusLabel.Text = $"Memproses job {job.Id}...";
             var waitForEndPrint = false;
-            StopPrinterStatusTimer();
             _ = SendHeartbeatAsync();
 
             try
@@ -441,7 +434,6 @@ namespace PrintForm
                         TryDeleteTempFile(_activeJobTempPath);
                         _activeJobTempPath = null;
                     }
-                    SchedulePrinterIdleStatus();
                 }
             }
         }
@@ -786,41 +778,6 @@ namespace PrintForm
             }
         }
 
-        private string GetPrinterStatus()
-        {
-            if (_jobProcessing || DateTime.UtcNow < _printerStatusHoldUntilUtc)
-            {
-                return "printing";
-            }
-
-            return "idle";
-        }
-
-        private void SchedulePrinterIdleStatus()
-        {
-            _printerStatusHoldUntilUtc = DateTime.UtcNow.AddSeconds(PrinterStatusHoldSeconds);
-            if (_printerStatusTimer == null)
-            {
-                _printerStatusTimer = new System.Windows.Forms.Timer();
-                _printerStatusTimer.Tick += async (_, _) =>
-                {
-                    StopPrinterStatusTimer();
-                    await SendHeartbeatAsync();
-                };
-            }
-
-            _printerStatusTimer.Interval = PrinterStatusHoldSeconds * 1000;
-            _printerStatusTimer.Start();
-        }
-
-        private void StopPrinterStatusTimer()
-        {
-            if (_printerStatusTimer != null)
-            {
-                _printerStatusTimer.Stop();
-            }
-        }
-
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             StopTimers();
@@ -857,13 +814,6 @@ namespace PrintForm
                 _pingTimer.Stop();
                 _pingTimer.Dispose();
             }
-
-            if (_printerStatusTimer != null)
-            {
-                _printerStatusTimer.Stop();
-                _printerStatusTimer.Dispose();
-            }
-
         }
     }
 }
