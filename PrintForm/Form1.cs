@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Printing;
 using System.IO;
-using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -15,7 +14,7 @@ namespace PrintForm
 {
     public partial class Form1 : Form
     {
-        // Menyimpan gambar yang akan di-preview / di-print via PrintDocument
+        // Menyimpan gambar yang akan di-print via PrintDocument
         private Image? _imageToPrint;
         private static readonly HttpClient Http = CreateHttpClient();
         private const string ServerBaseUrl = "http://127.0.0.1:3000";
@@ -23,15 +22,10 @@ namespace PrintForm
         private System.Windows.Forms.Timer? _heartbeatTimer;
         private System.Windows.Forms.Timer? _pingTimer;
         private bool _registerInProgress;
-        private System.Windows.Forms.Timer? _jobPollTimer;
         private bool _jobProcessing;
         private string? _activeJobId;
         private string? _activeJobTempPath;
-        private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        };
-        private const int JobPollIntervalMs = 5000;
+        private JobListForm? _jobListForm;
 
         public Form1()
         {
@@ -70,50 +64,11 @@ namespace PrintForm
                 comboPrinters.SelectedItem = defaultSettings.PrinterName;
             }
 
-            // Hubungkan PrintDocument dengan PrintPreviewControl
-            printPreviewControl1.Document = printDocument1;
-
-            statusLabel.Text = "Siap. Pilih printer dan dokumen.";
+            statusLabel.Text = "Siap. Pilih printer lalu buka Print Job.";
 
             await EnsureRegisteredAsync();
             StartHeartbeat();
             StartPingPolling();
-            StartJobPolling();
-        }
-
-        // =========================
-        // PILIH FILE DOKUMEN
-        // =========================
-        private void btnBrowse_Click(object sender, EventArgs e)
-        {
-            openFileDialog1.Title = "Pilih dokumen untuk dicetak";
-            openFileDialog1.Filter =
-                "Semua dokumen|*.pdf;*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.txt;*.jpg;*.jpeg;*.png;*.bmp|" +
-                "Gambar|*.jpg;*.jpeg;*.png;*.bmp|" +
-                "Semua file|*.*";
-
-            if (openFileDialog1.ShowDialog() == DialogResult.OK)
-            {
-                string path = openFileDialog1.FileName;
-                txtFilePath.Text = path;
-                statusLabel.Text = "Dokumen dipilih: " + openFileDialog1.SafeFileName;
-
-                // Reset image lama
-                _imageToPrint?.Dispose();
-                _imageToPrint = null;
-
-                // Jika file adalah gambar → load ke _imageToPrint untuk preview
-                string ext = Path.GetExtension(path).ToLowerInvariant();
-                if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp")
-                {
-                    using var img = Image.FromFile(path);
-                    _imageToPrint = new Bitmap(img);
-                }
-
-                ApplyPreviewZoom();
-                // Paksa refresh preview (akan panggil PrintPage)
-                printPreviewControl1.InvalidatePreview();
-            }
         }
 
         // =========================
@@ -134,7 +89,6 @@ namespace PrintForm
             if (result == DialogResult.OK)
             {
                 statusLabel.Text = "Konfigurasi halaman diperbarui.";
-                printPreviewControl1.InvalidatePreview();
             }
             else
             {
@@ -142,85 +96,19 @@ namespace PrintForm
             }
         }
 
-        // =========================
-        // PRINT DOKUMEN
-        //  - GAMBAR → PrintDocument (preview & konfigurasi ikut)
-        //  - NON-GAMBAR → lewat aplikasi default (printto)
-        // =========================
-        private void btnPrint_Click(object sender, EventArgs e)
+        private void btnJobList_Click(object sender, EventArgs e)
         {
-            try
+            if (_jobListForm == null || _jobListForm.IsDisposed)
             {
-                if (comboPrinters.SelectedItem == null)
-                {
-                    MessageBox.Show("Silakan pilih printer terlebih dahulu.",
-                                    "Informasi", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
-
-                if (string.IsNullOrWhiteSpace(txtFilePath.Text))
-                {
-                    MessageBox.Show("Silakan pilih dokumen yang akan dicetak.",
-                                    "Informasi", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
-
-                string printerName = comboPrinters.SelectedItem!.ToString()!;
-                string filePath = txtFilePath.Text;
-
-                // CABANG 1: FILE GAMBAR (ada preview) → pakai PrintDocument
-                if (_imageToPrint != null)
-                {
-                    printDocument1.PrinterSettings.PrinterName = printerName;
-
-                    if (!printDocument1.PrinterSettings.IsValid)
-                    {
-                        MessageBox.Show("Printer yang dipilih tidak valid atau tidak tersedia.",
-                                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        statusLabel.Text = "Printer tidak valid.";
-                        return;
-                    }
-
-                    statusLabel.Text = "Mengirim dokumen gambar ke printer...";
-                    printDocument1.Print();   // akan memicu PrintPage
-                    return;
-                }
-
-                // CABANG 2: BUKAN GAMBAR → kirim ke aplikasi default (PDF reader, Word, dll.)
-                statusLabel.Text = "Mengirim dokumen ke printer (via aplikasi default)...";
-
-                var psi = new ProcessStartInfo
-                {
-                    FileName = filePath,
-                    Verb = "printto",
-                    Arguments = $"\"{printerName}\"",
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden,
-                    UseShellExecute = true
-                };
-
-                var p = Process.Start(psi);
-
-                if (p != null)
-                {
-                    // Tunggu sebentar (banyak aplikasi print synchronously)
-                    p.WaitForExit(10000); // maks 10 detik
-                }
-
-                statusLabel.Text = "Dokumen dikirim ke printer.";
-                MessageBox.Show("Dokumen sudah dikirim ke printer melalui aplikasi bawaan dokumen.",
-                                "Informasi", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                _jobListForm = new JobListForm(Http, ServerBaseUrl, () => _clientId, PrintJobFromListAsync);
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Terjadi kesalahan saat mencetak dokumen.\n\n{ex.Message}",
-                                "Error Print", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                statusLabel.Text = "Gagal mengirim dokumen ke printer.";
-            }
+
+            _jobListForm.Show();
+            _jobListForm.BringToFront();
         }
 
         // =========================
-        // EVENT PRINTDOCUMENT (PREVIEW & PRINT)
+        // EVENT PRINTDOCUMENT (PRINT)
         // =========================
         private void printDocument1_PrintPage(object sender, PrintPageEventArgs e)
         {
@@ -305,17 +193,7 @@ namespace PrintForm
             // Dibiarkan kosong; hanya agar designer tidak error
         }
 
-        private void labelFile_Click(object sender, EventArgs e)
-        {
-            // Dibiarkan kosong; hanya agar designer tidak error
-        }
-
         private void statusStrip1_ItemClicked(object sender, ToolStripItemClickedEventArgs e)
-        {
-            // Dibiarkan kosong; hanya agar designer tidak error
-        }
-
-        private void txtFilePath_TextChanged(object sender, EventArgs e)
         {
             // Dibiarkan kosong; hanya agar designer tidak error
         }
@@ -386,16 +264,6 @@ namespace PrintForm
             _pingTimer.Start();
         }
 
-        private void StartJobPolling()
-        {
-            _jobPollTimer = new System.Windows.Forms.Timer
-            {
-                Interval = JobPollIntervalMs
-            };
-            _jobPollTimer.Tick += async (_, _) => await PollJobsAsync();
-            _jobPollTimer.Start();
-        }
-
         private async System.Threading.Tasks.Task SendHeartbeatAsync()
         {
             await EnsureRegisteredAsync();
@@ -446,13 +314,6 @@ namespace PrintForm
                     return;
                 }
 
-                if (response.StatusCode == HttpStatusCode.NotFound)
-                {
-                    _clientId = null;
-                    await RegisterClientAsync();
-                    return;
-                }
-
                 if (!response.IsSuccessStatusCode)
                 {
                     return;
@@ -481,35 +342,15 @@ namespace PrintForm
             }
         }
 
-        private async System.Threading.Tasks.Task PollJobsAsync()
+        private async System.Threading.Tasks.Task PrintJobFromListAsync(PrintJob job)
         {
-            await EnsureRegisteredAsync();
-            if (string.IsNullOrWhiteSpace(_clientId) || _jobProcessing)
+            if (_jobProcessing)
             {
+                statusLabel.Text = "Masih memproses job lain.";
                 return;
             }
 
-            try
-            {
-                using var response = await Http.GetAsync($"{ServerBaseUrl}/api/jobs?clientId={Uri.EscapeDataString(_clientId)}&status=ready");
-                if (!response.IsSuccessStatusCode)
-                {
-                    return;
-                }
-
-                var body = await response.Content.ReadAsStringAsync();
-                var jobs = JsonSerializer.Deserialize<List<PrintJob>>(body, JsonOptions);
-                if (jobs == null || jobs.Count == 0)
-                {
-                    return;
-                }
-
-                await ProcessJobAsync(jobs[0]);
-            }
-            catch
-            {
-                // Abaikan jika server tidak bisa dihubungi
-            }
+            await ProcessJobAsync(job);
         }
 
         private async System.Threading.Tasks.Task ProcessJobAsync(PrintJob job)
@@ -539,7 +380,7 @@ namespace PrintForm
 
                 _activeJobTempPath = downloadPath;
 
-                // Reset preview
+                // Reset image cache
                 _imageToPrint?.Dispose();
                 _imageToPrint = null;
 
@@ -549,10 +390,6 @@ namespace PrintForm
                     using var img = Image.FromFile(downloadPath);
                     _imageToPrint = new Bitmap(img);
                 }
-
-                txtFilePath.Text = downloadPath;
-                ApplyPreviewZoom();
-                printPreviewControl1.InvalidatePreview();
 
                 ApplyPrintConfig(job);
 
@@ -713,22 +550,6 @@ namespace PrintForm
             await RegisterClientAsync();
         }
 
-        protected override void OnShown(EventArgs e)
-        {
-            base.OnShown(e);
-            ApplyPreviewZoom();
-        }
-
-        private void ApplyPreviewZoom()
-        {
-            if (printPreviewControl1.ClientSize.Width <= 0 || printPreviewControl1.ClientSize.Height <= 0)
-            {
-                return;
-            }
-
-            printPreviewControl1.AutoZoom = true;
-        }
-
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             StopTimers();
@@ -766,24 +587,6 @@ namespace PrintForm
                 _pingTimer.Dispose();
             }
 
-            if (_jobPollTimer != null)
-            {
-                _jobPollTimer.Stop();
-                _jobPollTimer.Dispose();
-            }
-        }
-
-        private sealed class PrintJob
-        {
-            public string Id { get; set; } = string.Empty;
-            public string OriginalName { get; set; } = string.Empty;
-            public PrintConfig? PrintConfig { get; set; }
-        }
-
-        private sealed class PrintConfig
-        {
-            public string? PaperSize { get; set; }
-            public int Copies { get; set; }
         }
     }
 }
