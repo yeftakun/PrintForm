@@ -236,6 +236,22 @@ namespace PrintOrder
             return Path.Combine(CurrentUserStorageDirectoryPath, ConfigFileName);
         }
 
+        public static string CustomTempPath 
+        {
+            get 
+            {
+                // Ubah lokasi ini sesuai folder pengujian yang kamu inginkan
+                string path = @"C:\PrintOrder_TestTemp\"; 
+                
+                // Memastikan folder dibuat secara otomatis jika belum ada
+                if (!System.IO.Directory.Exists(path))
+                {
+                    System.IO.Directory.CreateDirectory(path);
+                }
+                return path;
+            }
+        }
+
         public static string GetClientIdFilePath()
         {
             return Path.Combine(CurrentMachineStorageDirectoryPath, ClientIdFileName);

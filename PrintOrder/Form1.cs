@@ -1591,7 +1591,8 @@ namespace PrintOrder
                 }
 
                 var contentLength = response.Content.Headers.ContentLength;
-                filePath = Path.Combine(Path.GetTempPath(), BuildJobTempFileName(jobId, originalName));
+                // filePath = Path.Combine(Path.GetTempPath(), BuildJobTempFileName(jobId, originalName));
+                filePath = Path.Combine(AppConfig.CustomTempPath, BuildJobTempFileName(jobId, originalName));
 
                 await using (var stream = await response.Content.ReadAsStreamAsync(downloadCts.Token))
                 await using (var fileStream = new FileStream(
@@ -1852,7 +1853,8 @@ namespace PrintOrder
                 };
             }
 
-            var userDataDir = Path.Combine(Path.GetTempPath(), $"printorder-edge-{Guid.NewGuid():N}");
+            // var userDataDir = Path.Combine(Path.GetTempPath(), $"printorder-edge-{Guid.NewGuid():N}");
+            var userDataDir = Path.Combine(AppConfig.CustomTempPath, $"printorder-edge-{Guid.NewGuid():N}");
             try
             {
                 Directory.CreateDirectory(userDataDir);
